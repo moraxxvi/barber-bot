@@ -1,6 +1,8 @@
 import asyncio
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+
+from db import init_db, add_booking, get_busy_hours
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
@@ -14,6 +16,7 @@ SERVICES = {
     "haircut": ("Мужская стрижка", 5000),
     "beard": ("Оформление бороды", 3000),
     "combo": ("Стрижка + борода", 7000),
+    "junior": ("Детская стрижка", 4000),
 }
 
 
@@ -38,10 +41,23 @@ def days_keyboard(service_key):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def free_hours(day):
+    busy = get_busy_hours(day)
+    now = datetime.now()
+    result = []
+    for hour in range(10, 21):
+        if hour in busy:
+            continue
+        if day == date.today().isoformat() and hour <= now.hour:
+            continue
+        result.append(hour)
+    return result
+
+
 def times_keyboard(service_key, day):
     buttons = []
     row = []
-    for hour in range(10, 21):
+    for hour in free_hours(day):
         row.append(InlineKeyboardButton(text=f"{hour}:00", callback_data=f"time:{service_key}:{day}:{hour}"))
         if len(row) == 4:
             buttons.append(row)
@@ -49,6 +65,7 @@ def times_keyboard(service_key, day):
     if row:
         buttons.append(row)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -73,29 +90,51 @@ async def choose_day(callback: CallbackQuery):
     _, key, day = callback.data.split(":")
     name, price = SERVICES[key]
     nice_day = date.fromisoformat(day).strftime("%d.%m")
+
+    if not free_hours(day):
+        await callback.message.edit_text(
+            f"На {nice_day} всё занято 😔\nВыбери другой день:",
+            reply_markup=days_keyboard(key),
+        )
+        await callback.answer()
+        return
+
     await callback.message.edit_text(
         f"{name} — {price} ₸\n📅 {nice_day}\n\nВыбери время:",
         reply_markup=times_keyboard(key, day),
     )
     await callback.answer()
 
+    
+
 
 @dp.callback_query(F.data.startswith("time:"))
 async def choose_time(callback: CallbackQuery):
     _, key, day, hour = callback.data.split(":")
+    hour = int(hour)
     name, price = SERVICES[key]
     nice_day = date.fromisoformat(day).strftime("%d.%m")
+
+    if hour in get_busy_hours(day):
+        await callback.answer("Это время только что заняли, выбери другое", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=times_keyboard(key, day))
+        return
+
+    add_booking(callback.from_user.id, callback.from_user.full_name, name, day, hour)
     await callback.message.edit_text(
         f"✅ Готово, ты записан!\n\n{name} — {price} ₸\n📅 {nice_day} в {hour}:00\n\nДо встречи ✂️"
     )
     await callback.answer()
+
 
 @dp.message()
 async def echo(message: Message):
     await message.answer(f"Ты написал: {message.text}")
 
 async def main():
+    init_db()
     print("Бот запущен")
     await dp.start_polling(bot)
+
 
 asyncio.run(main())
