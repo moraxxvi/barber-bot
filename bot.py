@@ -8,10 +8,18 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 load_dotenv()
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher()
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+
+class Booking(StatesGroup):
+    waiting_phone = State()
+
 SERVICES = {
     "haircut": ("Мужская стрижка", 5000),
     "beard": ("Оформление бороды", 3000),
@@ -66,10 +74,15 @@ def times_keyboard(service_key, day):
         buttons.append(row)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def phone_keyboard():
+    button = KeyboardButton(text="📱 Отправить номер", request_contact=True)
+    return ReplyKeyboardMarkup(keyboard=[[button]], resize_keyboard=True, one_time_keyboard=True)
+
 
 @dp.message(CommandStart())
-async def start(message: Message):
-       await message.answer(
+async def start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
         f"Привет, {message.from_user.first_name}! Я бот барбершопа ✂️\nВыбери услугу:",
         reply_markup=services_keyboard(),
     )
@@ -105,11 +118,8 @@ async def choose_day(callback: CallbackQuery):
     )
     await callback.answer()
 
-    
-
-
 @dp.callback_query(F.data.startswith("time:"))
-async def choose_time(callback: CallbackQuery):
+async def choose_time(callback: CallbackQuery, state: FSMContext):
     _, key, day, hour = callback.data.split(":")
     hour = int(hour)
     name, price = SERVICES[key]
@@ -120,11 +130,48 @@ async def choose_time(callback: CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=times_keyboard(key, day))
         return
 
-    add_booking(callback.from_user.id, callback.from_user.full_name, name, day, hour)
-    await callback.message.edit_text(
-        f"✅ Готово, ты записан!\n\n{name} — {price} ₸\n📅 {nice_day} в {hour}:00\n\nДо встречи ✂️"
+    await state.update_data(key=key, day=day, hour=hour)
+    await state.set_state(Booking.waiting_phone)
+    await callback.message.edit_text(f"{name} — {price} ₸\n📅 {nice_day} в {hour}:00")
+    await callback.message.answer(
+        "Остался последний шаг: нажми кнопку ниже, чтобы отправить номер 👇",
+        reply_markup=phone_keyboard(),
     )
     await callback.answer()
+
+@dp.message(Booking.waiting_phone, F.contact)
+async def get_phone(message: Message, state: FSMContext):
+    data = await state.get_data()
+    key, day, hour = data["key"], data["day"], data["hour"]
+    name, price = SERVICES[key]
+    nice_day = date.fromisoformat(day).strftime("%d.%m")
+    phone = message.contact.phone_number
+    client = message.from_user.full_name
+
+    if hour in get_busy_hours(day):
+        await state.clear()
+        await message.answer(
+            "Пока ты отправлял номер, это время заняли 😔\nНажми /start и выбери другое.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    add_booking(message.from_user.id, client, phone, name, day, hour)
+    await state.clear()
+
+    await message.answer(
+        f"✅ Готово, ты записан!\n\n{name} — {price} ₸\n📅 {nice_day} в {hour}:00\n\nДо встречи ✂️",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await bot.send_message(
+        ADMIN_ID,
+        f"🔔 Новая запись!\n\n👤 {client}\n📱 {phone}\n✂️ {name} — {price} ₸\n📅 {nice_day} в {hour}:00",
+    )
+
+
+@dp.message(Booking.waiting_phone)
+async def phone_not_sent(message: Message):
+    await message.answer("Нажми кнопку «📱 Отправить номер» внизу 👇")
 
 
 @dp.message()

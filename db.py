@@ -9,6 +9,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             user_name TEXT,
+            phone TEXT,
             service TEXT,
             day TEXT,
             hour INTEGER,
@@ -18,11 +19,11 @@ def init_db():
     conn.commit()
     conn.close()
 
-def add_booking(user_id, user_name, service, day, hour):
+def add_booking(user_id, user_name, phone, service, day, hour):
     conn = sqlite3.connect(DB_Name)
     conn.execute(
-        "INSERT INTO bookings (user_id, user_name, service, day, hour) VALUES (?, ?, ?, ?, ?)",
-        (user_id, user_name, service, day, hour),
+        "INSERT INTO bookings (user_id, user_name, phone, service, day, hour) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, user_name, phone, service, day, hour)
     )
     conn.commit()
     conn.close()
